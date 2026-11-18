@@ -426,6 +426,54 @@ class All88SweepPreflightTests(unittest.TestCase):
         for name in driver.SNAPSHOT_SOURCES:
             self.assertEqual((output / "workspace" / name).read_bytes(), (ROOT / name).read_bytes())
 
+    def test_frozen_config_keeps_ema_schedule_model_and_selection_metric(self):
+        # Regression: training reads only the frozen workspace config, which used to
+        # drop training_ema, training_schedule and model, so EMA never switched on.
+        row = next(row for row in driver.load_grid(GRID_PATH) if row["s4_probability"] == .03)
+        base = driver.sweep_config(self.config, self.config_path, row)
+        config = dict(base, training_ema=dict(decay=.9999),
+                      training_schedule=dict(warmup_steps=2000, decay="cosine", min_lr_ratio=.1, clip_grad_norm=1.0),
+                      model=dict(num_res_layers=8, res_channels=128, skip_channels=128),
+                      validation=dict(base["validation"], selection_metric="w1"))
+        write_json(self.config_path, config)
+        output = self.base / "frozen_options"
+        seen = []
+
+        def no_model_subprocess(command, **kwargs):
+            seen.append(json.loads(Path(kwargs["env"]["DREAMT_CONFIG_PATH"]).read_text(encoding="utf-8")))
+            return subprocess.CompletedProcess(command, 0)
+
+        args = ["run_dreamt.py", "--config", str(self.config_path), "--output-dir", str(output),
+                "--epochs", "3", "--threads", "4", "--skip-generation"]
+        with mock.patch.object(sys, "argv", args), \
+             mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch.object(run_dreamt, "require_cuda", return_value="cuda:0"), \
+             mock.patch.object(run_dreamt, "cuda_environment", return_value={"synthetic": True}), \
+             mock.patch.object(run_dreamt.subprocess, "run", side_effect=no_model_subprocess), \
+             contextlib.redirect_stdout(io.StringIO()):
+            run_dreamt.main()
+        frozen = seen[0]
+        self.assertEqual(frozen["training_ema"], dict(decay=.9999))
+        self.assertEqual(frozen["training_schedule"],
+                         dict(warmup_steps=2000, decay="cosine", min_lr_ratio=.1, clip_grad_norm=1.0))
+        self.assertEqual(frozen["model"], dict(num_res_layers=8, res_channels=128, skip_channels=128, s4_dstate=64))
+        self.assertEqual(frozen["validation"]["selection_metric"], "w1")
+
+        # Without these keys the frozen config records EMA off and no schedule/model block.
+        write_json(self.config_path, base)
+        seen.clear()
+        args[4] = str(self.base / "frozen_defaults")
+        with mock.patch.object(sys, "argv", args), \
+             mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch.object(run_dreamt, "require_cuda", return_value="cuda:0"), \
+             mock.patch.object(run_dreamt, "cuda_environment", return_value={"synthetic": True}), \
+             mock.patch.object(run_dreamt.subprocess, "run", side_effect=no_model_subprocess), \
+             contextlib.redirect_stdout(io.StringIO()):
+            run_dreamt.main()
+        self.assertEqual(seen[0]["training_ema"], dict(decay=0.0))
+        self.assertNotIn("training_schedule", seen[0])
+        self.assertNotIn("model", seen[0])
+
     def test_frozen_evaluation_binding_keeps_s092_in_training_without_model_loading(self):
         check = self.current(driver.load_grid(GRID_PATH)[0])
         manifest = dict(data_identity=check["data_identity"])

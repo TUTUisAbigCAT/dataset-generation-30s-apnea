@@ -22,6 +22,9 @@ sys.path.insert(0, str(ROOT))
 from host_runtime import configure_host_threads
 from training_input_dropout import input_dropout_options
 from s4_dropout_config import s4_dropout_options
+from training_ema import ema_options
+from training_schedule import schedule_options
+from model_config import model_options
 
 
 def require_cuda():
@@ -163,6 +166,14 @@ def main():
             frozen_config["signal_normalization"] = preprocessor.signal_normalization
         frozen_config["training_input_dropout"] = dropout_config
         frozen_config["s4_dropout"] = s4_probability
+        # Training reads only this frozen file (DREAMT_CONFIG_PATH below), so every
+        # training option of the selected JSON must be copied here, validated.
+        # Before this, EMA, the LR schedule and model size were silently dropped.
+        frozen_config["training_ema"] = ema_options(selected_config)
+        if "training_schedule" in selected_config:
+            frozen_config["training_schedule"] = schedule_options(selected_config)
+        if "model" in selected_config:
+            frozen_config["model"] = model_options(selected_config)
         frozen_config["validation"] = validation_config
         frozen_config["early_stopping"] = stopping_config
         frozen_config.update(schedule_config)
