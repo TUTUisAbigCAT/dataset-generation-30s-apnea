@@ -140,11 +140,15 @@ class ApneaChannelTests(unittest.TestCase):
         workspace = self.base / "workspace"
         run_dreamt.snapshot_source(workspace)
         self.assertTrue((workspace / "apnea_labels.py").is_file())
-        environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
-        result = subprocess.run([sys.executable, "-B", "-c",
-                                 "import data_utils, epoch_validation, validation_sampling, training_utils; "
-                                 "import os; assert os.path.dirname(os.path.abspath(data_utils.__file__)) == os.getcwd()"],
-                                cwd=workspace, env=environment, capture_output=True, text=True)
+        # Keep the environment as is: on Alliance clusters numpy comes from PYTHONPATH (scipy-stack).
+        # The current directory comes first on sys.path, so every local module must load from the
+        # workspace itself; one found elsewhere (for example the repository) means the copy is incomplete.
+        code = ("import os, data_utils, apnea_labels, epoch_validation, validation_sampling, training_utils\n"
+                "here = os.path.realpath(os.getcwd())\n"
+                "for module in (data_utils, apnea_labels, epoch_validation, validation_sampling, training_utils):\n"
+                "    assert os.path.dirname(os.path.realpath(module.__file__)) == here, module.__file__\n")
+        result = subprocess.run([sys.executable, "-B", "-c", code], cwd=workspace, env=dict(os.environ),
+                                capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_frozen_training_config_keeps_the_apnea_block(self):
