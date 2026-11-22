@@ -26,12 +26,16 @@ from window_config import EPOCH_SAMPLES, FS
 CONDITION_COLUMNS = ("stage_W", "stage_Light", "stage_REM", "stage_Deep",
                      "AHI", "BMI", "AGE", "gender_F", "gender_M")
 EXPECTED_COLUMNS = ("IBI",) + CONDITION_COLUMNS
+APNEA_COLUMNS = EXPECTED_COLUMNS + ("apnea_event",)
 
 
 def check_preprocessor_columns(preprocessor):
-    if (tuple(preprocessor.columns) != EXPECTED_COLUMNS
-            or list(preprocessor.hierarchical_features_cyclic) != list(EXPECTED_COLUMNS[1:])):
-        raise ValueError("Expected one IBI channel and the recorded nine DREAMT conditions")
+    """Ten channels, or eleven with the optional respiratory-event condition last."""
+    columns = tuple(preprocessor.columns)
+    if (columns not in (EXPECTED_COLUMNS, APNEA_COLUMNS)
+            or list(preprocessor.hierarchical_features_cyclic) != list(columns[1:])):
+        raise ValueError("Expected one IBI channel and the recorded nine DREAMT conditions (+ optional apnea_event)")
+    return len(columns)
 
 
 def select_window_starts(prepared, window_size, stride_samples, *, min_observed=2, max_windows=None):
@@ -75,9 +79,9 @@ def window_arrays(prepared, starts, window_size):
 
 
 def build_clean_windows(conditions, starts, window_size):
-    """[windows, window_size, 10] float32: IBI channel unknown (0), nine clean conditions."""
+    """[windows, window_size, 1 + C] float32: IBI channel unknown (0), C clean conditions (9 or 10)."""
     conditions = np.asarray(conditions, dtype=np.float32)
-    windows = np.zeros((len(starts), window_size, 10), dtype=np.float32)
+    windows = np.zeros((len(starts), window_size, 1 + conditions.shape[1]), dtype=np.float32)
     for index, start in enumerate(starts):
         windows[index, :, 1:] = conditions[start:start + window_size]
     return windows
@@ -107,7 +111,7 @@ def subject_demographics(prepared):
     return values[0].copy()
 
 
-def load_frozen_model(args, checkpoint, device):
+def load_frozen_model(args, checkpoint, device, channels=10):
     """Seed-42 construction, then strict restoration of every parameter and buffer."""
     import torch
     from cuda_runtime import assert_cuda_model
@@ -116,7 +120,7 @@ def load_frozen_model(args, checkpoint, device):
 
     np.random.seed(42)
     torch.manual_seed(42)
-    model = fetchModel(10, 1, args).to(device)
+    model = fetchModel(channels, 1, args).to(device)
     assert_cuda_model(model)
     data = Path(checkpoint).read_bytes()
     saved = torch.load(io.BytesIO(data), map_location=device, weights_only=True)

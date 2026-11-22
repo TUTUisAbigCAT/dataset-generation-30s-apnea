@@ -315,7 +315,7 @@ def run(cli, *, sampler=None, model_loader=None, device=None):
     try:
         args, data_config, config_provenance = load_inference_config(cli.config)
         preprocessor = Preprocessor("DREAMT", data_config=data_config)
-        sw.check_preprocessor_columns(preprocessor)
+        channels = sw.check_preprocessor_columns(preprocessor)
         stride = cli.window_stride_seconds * 25
         report.update(config_provenance=config_provenance, model_args=vars(args))
         results = {}
@@ -348,7 +348,8 @@ def run(cli, *, sampler=None, model_loader=None, device=None):
             from cuda_runtime import require_cuda
             device = require_cuda()
         torch.set_num_threads(cli.threads)
-        loader = sw.load_frozen_model if model_loader is None else model_loader
+        from functools import partial
+        loader = partial(sw.load_frozen_model, channels=channels) if model_loader is None else model_loader
         checkpoint = cli.checkpoint.expanduser().resolve()
         model, checkpoint_identity = loader(args, checkpoint, device)
         schedule = {key: value.to(device) if torch.is_tensor(value) else value

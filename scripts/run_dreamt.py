@@ -181,6 +181,8 @@ def main():
         frozen_config["generate_splits"] = identity["split_source"] == "generated_subject_split"
         if "evaluation_protocol" in identity:
             frozen_config["evaluation_protocol"] = identity["evaluation_protocol"]
+        if "apnea_condition" in identity:  # absolute label_dir and the selected event columns
+            frozen_config["apnea_condition"] = identity["apnea_condition"]
         save_json(workspace / "dataset_config.json", frozen_config)
         env = os.environ.copy()
         env["DREAMT_CONFIG_PATH"] = str(workspace / "dataset_config.json")

@@ -42,6 +42,10 @@ def load_inference_config(config_path):
             raise ValueError(f"{key} must be a nonempty path string or null")
         selected = Path(value).expanduser()
         data_config[key] = str((selected if selected.is_absolute() else path.parent / selected).resolve())
+    apnea = data_config.get("apnea_condition")
+    if isinstance(apnea, dict) and isinstance(apnea.get("label_dir"), str) and apnea["label_dir"].strip():
+        selected = Path(apnea["label_dir"]).expanduser()
+        apnea["label_dir"] = str((selected if selected.is_absolute() else path.parent / selected).resolve())
     provenance = dict(source="explicit inference JSON and fixed S4 baseline template",
         config_path=str(path), config_sha256=hashlib.sha256(contents).hexdigest(),
         window=dimensions, diffusion_settings=schedule, s4_dropout=args.s4_dropout, model=model_size,

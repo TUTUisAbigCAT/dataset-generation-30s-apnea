@@ -100,7 +100,7 @@ def run(cli, *, sampler=None, model_loader=None, device=None):
             raise FileNotFoundError("Checkpoint file does not exist: " + str(checkpoint))
         args, data_config, config_provenance = load_inference_config(cli.config)
         preprocessor = Preprocessor("DREAMT", data_config=data_config)
-        sw.check_preprocessor_columns(preprocessor)
+        channels = sw.check_preprocessor_columns(preprocessor)
         stride = cli.window_stride_seconds * 25
         plans = []
         for subject in cli.subjects:
@@ -122,7 +122,8 @@ def run(cli, *, sampler=None, model_loader=None, device=None):
         import torch
         from diffusion_schedule import build_diffusion_config
         torch.set_num_threads(cli.threads)
-        loader = sw.load_frozen_model if model_loader is None else model_loader
+        from functools import partial
+        loader = partial(sw.load_frozen_model, channels=channels) if model_loader is None else model_loader
         model, checkpoint_identity = loader(args, checkpoint, device)
         schedule = {key: value.to(device) if torch.is_tensor(value) else value
                     for key, value in build_diffusion_config(args).items()}

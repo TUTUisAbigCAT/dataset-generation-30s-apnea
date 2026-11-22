@@ -37,13 +37,23 @@ def _arguments(training_args):
     return Namespace(**deepcopy(values))
 
 
+def model_input_channels(model):
+    """The S4 imputer's input channel count, or None for test-only denoisers."""
+    try:
+        return int(model.init_conv[0].conv.in_channels)
+    except (AttributeError, IndexError, TypeError):
+        return None
+
+
 def _validate_inputs(model, clean_windows, diffusion_config, training_args, device):
     if not torch.is_tensor(clean_windows) or clean_windows.ndim != 3:
-        raise ValueError("Validation windows must have shape [batch, length, 10]")
+        raise ValueError("Validation windows must have shape [batch, length, channels]")
     args = _arguments(training_args)
+    expected = model_input_channels(model)
     if (clean_windows.shape[0] < 1 or clean_windows.shape[1] != args.window_size
-            or clean_windows.shape[2] != 10):
-        raise ValueError("Validation requires nonempty, complete 10-channel windows")
+            or clean_windows.shape[2] not in (10, 11)
+            or (expected is not None and clean_windows.shape[2] != expected)):
+        raise ValueError("Validation requires nonempty, complete windows with the model's 10 or 11 channels")
     if clean_windows.dtype != torch.float32 or clean_windows.device != device:
         raise ValueError("Validation input must be float32 on the selected device")
     if not bool(torch.isfinite(clean_windows).all()):
@@ -90,7 +100,7 @@ def _sample_windows_from_original(model, clean_windows, diffusion_config, traini
         diffusion_config=diffusion_config,
         test_dataset=SimpleNamespace(inputs=windows),
         test_dataloader=[windows], mask_dataloader=[masks],
-        hierarchical_column_indices=torch.arange(1, 10, device=device),
+        hierarchical_column_indices=torch.arange(1, windows.shape[2], device=device),
         non_hier_cols=torch.tensor([0], device=device), num_ops=0, trial=0,
     )
     try:

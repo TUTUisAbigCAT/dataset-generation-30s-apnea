@@ -17,12 +17,21 @@ from watchsleep_loader import SSDataset
 from window_config import FS, EPOCH_SAMPLES, window_settings
 from signal_normalization import (normalization_spec, normalization_affine_parameters,
                                   signal_affine_parameters, validate_signal_bounds)
+import apnea_labels
 
 ROOT = Path(__file__).resolve().parent
 datasets = {"DREAMT_SIM": None, "DREAMT": None}
 STAGE_NAMES = ("W", "Light", "REM", "Deep")
 CONTINUOUS = ("AHI", "BMI", "AGE")
 COLUMNS = ("IBI",) + tuple("stage_" + name for name in STAGE_NAMES) + CONTINUOUS + ("gender_F", "gender_M")
+# Optional eleventh channel (config "apnea_condition"): 0/1 respiratory event per sample.
+# It is appended last, so every historical channel index is unchanged.
+APNEA_COLUMN = apnea_labels.CHANNEL_NAME
+APNEA_INDEX = len(COLUMNS)
+
+
+def model_columns(apnea_enabled):
+    return COLUMNS + ((APNEA_COLUMN,) if apnea_enabled else ())
 ZERO_VALUE_POLICY = "preserve stored zero missing-value markers in scaler and unmodified MSE; no imputation"
 MASKED_ZERO_VALUE_POLICY = "raw IBI > 0 is observed; training signal scaler uses observed points only; missing signal inputs are standardized zero; observed mask is separate from the ten model channels"
 ZERO_FILL_ONE_VALUE_POLICY = "replace raw IBI == 0 with 1.0 second before training-only signal scaling and window standardization; ordinary MSE includes all filled points; original records and observed masks remain unchanged"
@@ -159,6 +168,12 @@ class Preprocessor:
         self.zero_value_policy = {"preserve": ZERO_VALUE_POLICY, "masked": MASKED_ZERO_VALUE_POLICY,
                                  "zero_fill_one": ZERO_FILL_ONE_VALUE_POLICY}[policy]
         self.signal_normalization = normalization_spec(config)
+        self.apnea_condition = apnea_labels.condition_options(config)
+        if self.apnea_condition is not None:
+            label_dir = _resolve_path(self.apnea_condition["label_dir"], config_base)
+            if not label_dir.is_dir():
+                raise FileNotFoundError(f"apnea_condition.label_dir does not exist: {label_dir}")
+            self.apnea_condition["label_dir"] = str(label_dir)
         dimensions = window_settings(config if window_epochs is None else {"window_epochs": window_epochs})
         self.window_epochs = dimensions["window_epochs"]
         self.window_size = dimensions["window_size"]
@@ -239,10 +254,10 @@ class Preprocessor:
                                   evaluation_protocol=self.evaluation_protocol,
                                   evaluation_filenames=self.evaluation_filenames)
         self.split_fingerprint = _fingerprint(split_identity)
-        self.columns = pd.Index(COLUMNS)
+        self.columns = pd.Index(model_columns(self.apnea_condition is not None))
         self.schema_frame = pd.DataFrame(columns=self.columns, dtype=np.float32)
-        self.hierarchical_features_cyclic = list(COLUMNS[1:])
-        self.hierarchical_features_uncyclic = list(COLUMNS[1:])
+        self.hierarchical_features_cyclic = list(self.columns[1:])
+        self.hierarchical_features_uncyclic = list(self.columns[1:])
         metadata = pd.read_csv(self.metadata_path, dtype={"SID": str})
         if not {"SID", "AHI", "BMI", "AGE", "GENDER"}.issubset(metadata.columns):
             raise ValueError("participant_info.csv requires SID, AHI, BMI, AGE, GENDER")
@@ -352,9 +367,22 @@ class Preprocessor:
             stages=np.repeat(loaded["stage_epochs"], EPOCH_SAMPLES).astype(np.int8),
             continuous=continuous, gender=gender,
             ahi_source="participant_info.csv" if loaded["ahi"] is None else "NPZ verified against participant_info.csv")
+        if self.apnea_condition is not None:
+            record["apnea"] = self.apnea_samples(filename, loaded)
         self._records[filename] = record
         self.accessed_files.append(filename)
         return record
+
+    def apnea_samples(self, filename, loaded):
+        """0/1 respiratory event for every sample of loaded["ibi_epochs"] (sidecar bound by SHA-256)."""
+        if self.apnea_condition is None:
+            raise ValueError("apnea_condition is not configured")
+        stored = loaded["stored_complete_epochs"] * EPOCH_SAMPLES + loaded["discarded_tail_samples"]
+        labels = apnea_labels.load_sample_labels(
+            self.apnea_condition["label_dir"], filename, npz_sha256=loaded["file_sha256"],
+            expected_samples=stored, event_columns=self.apnea_condition["event_columns"],
+            downsample_rate=self.downsample_rate)
+        return labels[:loaded["ibi_epochs"].size].copy()
 
     def _window_valid_for_policy(self, record, first, count):
         if not _window_valid(record, first, count):
@@ -387,7 +415,7 @@ class Preprocessor:
     def window_array(self, filename, start, length):
         record = self._window_record(filename, start, length)
         end = start + length
-        array = np.empty((length, len(COLUMNS)), dtype=np.float32)
+        array = np.empty((length, len(self.columns)), dtype=np.float32)
         signal = record["ibi"][start:end].astype(np.float64)
         if self.missing_value_policy == "zero_fill_one":
             signal[signal == 0] = 1.0
@@ -400,6 +428,8 @@ class Preprocessor:
         array[:, 5:8] = (record["continuous"] - self._meta_mean) / self._meta_std
         array[:, 8] = float(record["gender"] == "F")
         array[:, 9] = float(record["gender"] == "M")
+        if self.apnea_condition is not None:
+            array[:, APNEA_INDEX] = record["apnea"][start:end]
         return array
 
     def make_training_dataset(self, window_size, stride):
@@ -464,7 +494,7 @@ class Preprocessor:
             split_seed=self.split_seed, split_fingerprint=self.split_fingerprint, splits=self.splits,
             sample_rate_hz=FS, epoch_samples=EPOCH_SAMPLES, window_epochs=self.window_epochs,
             multiplier=self.multiplier, downsample_rate=self.downsample_rate, max_epochs=self.max_epochs,
-            columns=list(COLUMNS), stage_names=list(STAGE_NAMES),
+            columns=list(self.columns), stage_names=list(STAGE_NAMES),
             zero_value_policy=self.zero_value_policy,
             raw_stage_mapping={"0": 0, "1": 1, "2": 1, "3": 3, "4": 2, "other": -1},
             scaler=self.scaler, scaler_subjects=self.scaler_subjects,
@@ -476,6 +506,8 @@ class Preprocessor:
             identity["missing_value_policy"] = self.missing_value_policy
         if self.signal_normalization is not None:
             identity["signal_normalization"] = dict(self.signal_normalization)
+        if self.apnea_condition is not None:
+            identity["apnea_condition"] = dict(self.apnea_condition)
         if self.evaluation_protocol is not None:
             identity.update(evaluation_protocol=dict(self.evaluation_protocol),
                             evaluation_filenames=self.evaluation_filenames)
@@ -514,6 +546,8 @@ class Preprocessor:
         config = {"signal_normalization": identity.get("signal_normalization", {"method": "zscore"})}
         if all_subjects:
             config["evaluation_protocol"] = identity["evaluation_protocol"]
+        if "apnea_condition" in identity:
+            config["apnea_condition"] = identity["apnea_condition"]
         processor = cls(identity.get("dataset", dataset), data_dir=identity["data_directory"],
             metadata_path=identity["metadata_path"], split_path=identity["split_path"],
             multiplier=identity["multiplier"], downsample_rate=identity["downsample_rate"],
@@ -540,7 +574,7 @@ class Preprocessor:
         synthetic = True if all(flag is True for flag in flags) else (False if all(flag is False for flag in flags) else None)
         provenance = dict(dataset=self.dataset, data_directory=str(self.data_dir.resolve()),
             data_synthetic=synthetic,
-            columns=list(COLUMNS), non_hierarchical_columns=["IBI"],
+            columns=list(self.columns), non_hierarchical_columns=["IBI"],
             hierarchical_columns=self.hierarchical_features_cyclic,
             sample_rate_hz=FS, epoch_samples=EPOCH_SAMPLES, window_epochs=self.window_epochs, window_size=self.window_size, stage_names=list(STAGE_NAMES),
             zero_value_policy=self.zero_value_policy, missing_value_policy=self.missing_value_policy,

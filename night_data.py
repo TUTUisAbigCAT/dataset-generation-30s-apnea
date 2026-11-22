@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from data_utils import CONTINUOUS
+from data_utils import APNEA_COLUMN, CONTINUOUS
 from watchsleep_loader import EPOCH_SAMPLES, STAGE_NAMES, TARGET_FS, SSDataset
 
 # 0.3 s corresponds to 200 bpm, above any physiological sleeping heart rate.
@@ -104,11 +104,18 @@ def prepare_night(preprocessor, subject="S092", *, allow_time_gaps=False):
         raise ValueError("Training metadata scaler must contain three finite means and positive standard deviations")
 
     samples = len(stages) * EPOCH_SAMPLES
-    conditions = np.empty((samples, 9), dtype=np.float32)
+    apnea_enabled = getattr(preprocessor, "apnea_condition", None) is not None
+    conditions = np.empty((samples, 10 if apnea_enabled else 9), dtype=np.float32)
     conditions[:, :4] = np.repeat(np.eye(4, dtype=np.float32)[stages], EPOCH_SAMPLES, axis=0)
     conditions[:, 4:7] = (continuous - meta_mean) / meta_std
     conditions[:, 7] = float(gender == "F")
     conditions[:, 8] = float(gender == "M")
+    apnea = None
+    if apnea_enabled:
+        apnea = preprocessor.apnea_samples(filename, record)
+        if apnea.shape != (samples,):
+            raise ValueError("Respiratory-event labels do not cover the complete stored epochs")
+        conditions[:, 9] = apnea
     if not np.isfinite(conditions).all():
         raise ValueError("Participant conditions cannot be represented as finite float32 values")
     reference = record["ibi_epochs"].astype(np.float64).reshape(-1)
@@ -119,7 +126,7 @@ def prepare_night(preprocessor, subject="S092", *, allow_time_gaps=False):
         subject_in_original_training_scaler=sid in preprocessor.scaler_subjects,
         condition_channels_exclude_reference_ibi=True,
         condition_columns=["stage_" + value for value in STAGE_NAMES]
-                          + list(CONTINUOUS) + ["gender_F", "gender_M"],
+                          + list(CONTINUOUS) + ["gender_F", "gender_M"] + ([APNEA_COLUMN] if apnea_enabled else []),
         training_max_epochs=preprocessor.max_epochs, generation_max_epochs=None,
         stored_complete_epochs=int(record["stored_complete_epochs"]),
         target_samples=samples, coverage="all_complete_stored_epochs",
@@ -137,7 +144,7 @@ def prepare_night(preprocessor, subject="S092", *, allow_time_gaps=False):
         raw_stage_export_policy="copy source raw labels: W=0, N1=1, N2=2, Deep=3, REM=4; model merges N1/N2 as Light",
     )
     return dict(conditions=conditions, reference_seconds=reference, stage_epochs_four=stages,
-                raw_stage_epochs=raw_stages, ahi=float(continuous[0]),
+                raw_stage_epochs=raw_stages, ahi=float(continuous[0]), apnea_samples=apnea,
                 subject_id=sid, filename=filename, record=record, provenance=provenance)
 
 
