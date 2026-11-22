@@ -24,7 +24,8 @@ mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR"
 
 # The raw folder can be given as the first argument (works whatever sbatch does with
 # the environment):  sbatch submit_apnea_labels.sh /path/to/dreamt/data_100Hz
-RAW_DIR="${1:-${RAW_DIR:-/home/yxtao/links/scratch/dreamt/data_100Hz}}"
+# DREAMT 2.1.0, the version DREAMT_PIBI_SE was made from (2.2.0 re-aligned the recordings and does not match).
+RAW_DIR="${1:-${RAW_DIR:-/home/yxtao/links/scratch/checkdataset/data_100Hz}}"
 # AHI for the sanity check comes from participant_info.csv in the NPZ folder (the file training uses).
 if [ ! -d "$RAW_DIR" ]; then
   echo "Raw DREAMT folder not found: $RAW_DIR" >&2
