@@ -15,6 +15,9 @@ module load StdEnv/2023 gcc/12.3
 module load python/3.11
 module load scipy-stack/2024a
 source ./.venv/bin/activate
+# $HOME and $PROJECT are read-only inside Trillium jobs: keep matplotlib/torch caches on the job's local disk.
+export XDG_CACHE_HOME="${SLURM_TMPDIR:-/tmp}/cache" MPLCONFIGDIR="${SLURM_TMPDIR:-/tmp}/matplotlib"
+mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR"
 
 NIGHTS="${NIGHTS:-/home/yxtao/links/scratch/dataset-generation-30s-apnea/nights}"
 BASELINE="${BASELINE:-$NIGHTS/2min}"

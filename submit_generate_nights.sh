@@ -21,6 +21,9 @@ module load opencv/4.9.0
 module load python/3.11
 module load scipy-stack/2024a
 source ./.venv/bin/activate
+# $HOME and $PROJECT are read-only inside Trillium jobs: keep matplotlib/torch caches on the job's local disk.
+export XDG_CACHE_HOME="${SLURM_TMPDIR:-/tmp}/cache" MPLCONFIGDIR="${SLURM_TMPDIR:-/tmp}/matplotlib"
+mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}" MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export PYTHONFAULTHANDLER=1
 

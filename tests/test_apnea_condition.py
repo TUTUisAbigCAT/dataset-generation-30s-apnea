@@ -133,6 +133,20 @@ class ApneaChannelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "10 or 11 channels"):
             _sample_windows_from_original(fetchModel(10, 1, args).eval(), torch.zeros(1, 750, 11), schedule, small, "cpu")
 
+    def test_run_snapshot_can_import_the_data_modules_on_its_own(self):
+        # Regression: training stages run inside the frozen workspace copy; data_utils.py
+        # imports apnea_labels.py, which the snapshot list must therefore include.
+        from scripts import run_dreamt
+        workspace = self.base / "workspace"
+        run_dreamt.snapshot_source(workspace)
+        self.assertTrue((workspace / "apnea_labels.py").is_file())
+        environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+        result = subprocess.run([sys.executable, "-B", "-c",
+                                 "import data_utils, epoch_validation, validation_sampling, training_utils; "
+                                 "import os; assert os.path.dirname(os.path.abspath(data_utils.__file__)) == os.getcwd()"],
+                                cwd=workspace, env=environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_frozen_training_config_keeps_the_apnea_block(self):
         from scripts import run_dreamt
         seen = []
