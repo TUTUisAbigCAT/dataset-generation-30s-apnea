@@ -19,7 +19,7 @@
 在 Trillium 上的运行顺序（仓库放在 `/project/def-plago/yxtao/dataset-generation-30s-apnea`，可直接复用 v2 的环境：`ln -s ../dataset-generation-v2/.venv .venv`）：
 
 ```bash
-sbatch submit_apnea_labels.sh /path/to/dreamt/2.1.0/data_100Hz   # 1. 生成呼吸事件 sidecar，先看 report.csv（全部 status=written、事件数/睡眠小时 与 AHI 的相关）
+sbatch submit_apnea_labels.sh            # 1. 生成呼吸事件 sidecar，先看 report.csv（全部 status=written、事件数/睡眠小时 与 AHI 的相关）
 sbatch submit_30s_apnea.sh               # 2. 训练 30 秒 + 呼吸事件模型（可加 --dependency=afterok:<上一步的 job id>）
 sbatch --export=ALL,CONFIG=configs/dreamt_30s.json submit_30s_apnea.sh   # 可选：不加事件的 30 秒对照
 # 3. 两个模型各自生成全部 88 人整晚（任务超时可原样重交，已完成的人会跳过）

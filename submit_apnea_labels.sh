@@ -23,8 +23,9 @@ export XDG_CACHE_HOME="${SLURM_TMPDIR:-/tmp}/cache" MPLCONFIGDIR="${SLURM_TMPDIR
 mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR"
 
 # The raw folder can be given as the first argument (works whatever sbatch does with
-# the environment):  sbatch submit_apnea_labels.sh /path/to/dreamt/2.1.0/data_100Hz
-RAW_DIR="${1:-${RAW_DIR:-/home/yxtao/scratch/confirmed_datasets/physionet.org/files/dreamt/2.1.0/data_100Hz}}"
+# the environment):  sbatch submit_apnea_labels.sh /path/to/dreamt/data_100Hz
+RAW_DIR="${1:-${RAW_DIR:-/home/yxtao/links/scratch/dreamt/data_100Hz}}"
+# AHI for the sanity check comes from participant_info.csv in the NPZ folder (the file training uses).
 if [ ! -d "$RAW_DIR" ]; then
   echo "Raw DREAMT folder not found: $RAW_DIR" >&2
   echo "Find it with: find /scratch/\$USER /project/def-plago -maxdepth 7 -name 'S002_*.csv' 2>/dev/null" >&2
