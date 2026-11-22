@@ -166,6 +166,26 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(report["replay_attempts"][0]["trim"], "both")
         self.assertEqual(json.loads(str(arrays["replay"]))["trim"], "none")
 
+    def test_npz_that_stores_n2_under_another_code_is_accepted(self):
+        frame, rows, raw_dir, npz_dir = write_subject(self.folder, "S005", self.rng)
+        with np.load(npz_dir / "S005.npz") as saved:
+            stages, data = saved["stages"].copy(), saved["data"]
+        renamed = np.where(stages == 2, 1, stages)                   # N2 stored as 1 (light sleep)
+        np.savez(npz_dir / "S005.npz", data=data, fs=25, stages=renamed)
+        arrays, report = al.build_subject_labels(raw_dir / "S005_whole_df.csv", npz_dir / "S005.npz")
+        np.testing.assert_array_equal(arrays["source_row"], rows)
+        np.testing.assert_array_equal(arrays["stages"], renamed)
+        self.assertEqual(report["replay"]["npz_stage_codes"].get(2), 1)
+        self.assertEqual(report["replay"]["trim"], "both")
+        np.savez(npz_dir / "S005.npz", data=data, fs=25, stages=np.zeros_like(stages))   # constant track
+        with self.assertRaisesRegex(ValueError, "no replay reproduces"):
+            al.build_subject_labels(raw_dir / "S005_whole_df.csv", npz_dir / "S005.npz")
+
+    def test_stage_relabeling_rules(self):
+        self.assertEqual(al.stage_relabeling([0, 1, 2, 2, 4], [0, 1, 1, 1, 4]), {0: 0, 1: 1, 2: 1, 4: 4})
+        self.assertIsNone(al.stage_relabeling([0, 1, 2, 2, 4], [0, 1, 1, 2, 4]))   # boundary moved
+        self.assertIsNone(al.stage_relabeling([0, 1, 2], [0, 1]))
+
     def test_stage_or_length_disagreement_is_refused(self):
         _, rows, raw_dir, npz_dir = write_subject(self.folder, "S002", self.rng)
         with np.load(npz_dir / "S002.npz") as saved:

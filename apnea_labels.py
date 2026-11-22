@@ -110,6 +110,25 @@ def replay_epoch_rows(mapped_stages, *, epoch_samples=SOURCE_EPOCH_SAMPLES, trim
     return row_view, stage_view, starts, details
 
 
+def stage_relabeling(replay_stages, npz_stages):
+    """{replay code: NPZ code} if the NPZ only renames codes (for example N2 stored as 1), else None.
+
+    Every replay code must map to one NPZ code at every sample, so the stage
+    boundaries coincide exactly; at least three distinct NPZ codes are required,
+    which rules out a degenerate match against a constant stage track.
+    """
+    replay_stages = np.asarray(replay_stages, dtype=np.int64)
+    npz_stages = np.asarray(npz_stages, dtype=np.int64)
+    if replay_stages.shape != npz_stages.shape or not replay_stages.size:
+        return None
+    pairs = np.unique(np.stack([replay_stages, npz_stages], axis=1), axis=0)
+    if len(np.unique(pairs[:, 0])) != len(pairs):
+        return None
+    if len(np.unique(npz_stages)) < min(3, len(np.unique(replay_stages))):
+        return None
+    return {int(a): int(b) for a, b in pairs}
+
+
 def replay_epoch_selection(mapped_stages, *, epoch_samples=SOURCE_EPOCH_SAMPLES, downsample=DOWNSAMPLE):
     """Return (source_rows, stages, details) for every stored output sample, in stored order."""
     row_view, stage_view, starts, details = replay_epoch_rows(mapped_stages, epoch_samples=epoch_samples)
@@ -238,7 +257,7 @@ def build_subject_labels(csv_path, npz_path, *, ahi=None, verify_ibi_epochs=0):
         npz_stages = np.asarray(saved["stages"]).reshape(-1).astype(np.int64)
     if npz_stages.size != npz_samples:
         raise ValueError(f"{npz_path.name}: expected sample-level stages")
-    attempts, chosen = [], None
+    attempts, chosen, renamed = [], None, None
     for p_as_wake in (False, True):
         candidate = map_stages(raw_stages, p_as_wake=True) if p_as_wake else mapped
         if p_as_wake and np.array_equal(candidate, mapped):
@@ -258,11 +277,20 @@ def build_subject_labels(csv_path, npz_path, *, ahi=None, verify_ibi_epochs=0):
                 if not mismatch.size:
                     chosen = (row_view[positions], replay_stages, dict(details, p_as_wake=p_as_wake),
                               row_view, starts)
+                elif renamed is None:
+                    relabel = stage_relabeling(replay_stages, npz_stages)
+                    if relabel is not None:
+                        attempt["npz_stage_codes"] = relabel
+                        renamed = (row_view[positions], replay_stages,
+                                   dict(details, p_as_wake=p_as_wake, npz_stage_codes=relabel), row_view, starts)
             attempts.append(attempt)
             if chosen:
                 break
         if chosen:
             break
+    if chosen is None and renamed is not None:
+        # Same epochs and the same stage boundaries; the NPZ merely stores some stages under other codes.
+        chosen = renamed
     if chosen is None:
         labels, counts = np.unique(np.asarray([str(value) for value in raw_stages]), return_counts=True)
         tried = "; ".join(f"trim={a['trim']} P_as_W={a['p_as_wake']}: "
