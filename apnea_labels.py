@@ -35,18 +35,32 @@ DOWNSAMPLE = 4
 CHANNEL_NAME = "apnea_event"
 
 
-def map_stages(raw_stages):
-    """Exactly ``stage_mapping.get(stage, -1)`` for every raw label (NaN -> -1)."""
-    return np.fromiter((STAGE_MAPPING.get(stage, -1) for stage in raw_stages),
+def map_stages(raw_stages, *, p_as_wake=False):
+    """Exactly ``stage_mapping.get(stage, -1)`` for every raw label (NaN -> -1).
+
+    p_as_wake=True is the variant in which the preparation label "P" counts as W.
+    """
+    mapping = dict(STAGE_MAPPING, P=0) if p_as_wake else STAGE_MAPPING
+    return np.fromiter((mapping.get(stage, -1) for stage in raw_stages),
                        dtype=np.int64, count=len(raw_stages))
 
 
-def replay_epoch_rows(mapped_stages, *, epoch_samples=SOURCE_EPOCH_SAMPLES):
+# Scripts that may have produced an NPZ folder: the published script trims
+# ("both"); earlier copies may not. Each variant is accepted only if it
+# reproduces the NPZ stages sample for sample.
+TRIM_VARIANTS = ("both", "none", "end", "start")
+
+
+def replay_epoch_rows(mapped_stages, *, epoch_samples=SOURCE_EPOCH_SAMPLES, trim="both"):
     """Replay trimming and the epoch scan; return (row_view, stage_view, starts, details).
 
     Kept epoch k covers row_view[starts[k]:starts[k] + epoch_samples] at the
     source rate. Rows are original CSV row indices (0 = first data row).
+    trim: "both" is the published script; "none", "end" and "start" skip all or
+    part of its trimming step.
     """
+    if trim not in TRIM_VARIANTS:
+        raise ValueError(f"trim must be one of {TRIM_VARIANTS}")
     mapped_stages = np.asarray(mapped_stages, dtype=np.int64)
     rows = np.flatnonzero(mapped_stages != -1)
     stages = mapped_stages[rows]
@@ -55,14 +69,22 @@ def replay_epoch_rows(mapped_stages, *, epoch_samples=SOURCE_EPOCH_SAMPLES):
         raise ValueError("No valid sleep stages found in the data.")
     start_idx = max(int(non_wake[0]) // epoch_samples, 0)
     end_idx = min(int(non_wake[-1]), len(stages))
-    if start_idx < end_idx:
+    if trim == "none" or start_idx >= end_idx:
+        signal_length = len(stages)
+        stage_view, row_view, trimmed = stages, rows, False
+    elif trim == "both":
         signal_length = end_idx - start_idx
         stage_view = stages[start_idx:end_idx + 1]
         row_view = rows[start_idx:end_idx + 1]
         trimmed = True
-    else:
-        signal_length = len(stages)
-        stage_view, row_view, trimmed = stages, rows, False
+    elif trim == "end":
+        start_idx = 0
+        signal_length = end_idx
+        stage_view, row_view, trimmed = stages[:end_idx + 1], rows[:end_idx + 1], True
+    else:  # "start"
+        end_idx = len(stages)
+        signal_length = len(stages) - start_idx
+        stage_view, row_view, trimmed = stages[start_idx:], rows[start_idx:], True
     # changes[k] counts stage changes up to position k, so the epoch [i, i+E)
     # is constant exactly when changes[i + E - 1] == changes[i].
     changes = np.concatenate(([0], np.cumsum(stage_view[1:] != stage_view[:-1])))
@@ -81,7 +103,7 @@ def replay_epoch_rows(mapped_stages, *, epoch_samples=SOURCE_EPOCH_SAMPLES):
     if not starts:
         raise ValueError("No constant-stage epochs were found")
     starts = np.asarray(starts, dtype=np.int64)
-    details = dict(valid_rows=int(len(rows)), start_idx=start_idx, end_idx=end_idx, trimmed=trimmed,
+    details = dict(valid_rows=int(len(rows)), trim=trim, start_idx=start_idx, end_idx=end_idx, trimmed=trimmed,
                    signal_length=int(signal_length), kept_epochs=int(len(starts)),
                    first_kept_row=int(row_view[starts[0]]),
                    last_kept_row=int(row_view[starts[-1] + epoch_samples - 1]))
@@ -95,8 +117,8 @@ def replay_epoch_selection(mapped_stages, *, epoch_samples=SOURCE_EPOCH_SAMPLES,
     return row_view[positions], stage_view[positions], details
 
 
-def reference_epoch_selection(mapped_stages, *, epoch_samples, downsample):
-    """Literal transcription of the original loop (slow; used by tests only)."""
+def reference_epoch_selection(mapped_stages, *, epoch_samples, downsample, trim=True):
+    """Literal transcription of the original loop (slow; used by tests only); trim=False skips trimming."""
     mapped_stages = np.asarray(mapped_stages)
     valid = mapped_stages != -1
     index = np.arange(len(mapped_stages))[valid]
@@ -106,7 +128,7 @@ def reference_epoch_selection(mapped_stages, *, epoch_samples, downsample):
     end_idx = non_wake[-1]
     start_idx = max(start_idx, 0)
     end_idx = min(end_idx, len(index))
-    if start_idx < end_idx:
+    if trim and start_idx < end_idx:
         index = index[start_idx:end_idx]
         stages = stages[start_idx:end_idx + 1]
     kept_index, kept_stages = [], []
@@ -208,22 +230,49 @@ def build_subject_labels(csv_path, npz_path, *, ahi=None, verify_ibi_epochs=0):
         step = float(np.median(np.diff(frame["TIMESTAMP"].to_numpy(dtype=np.float64)[:10001])))
         if not abs(step - 1.0 / SOURCE_FS) < 0.05 / SOURCE_FS:
             raise ValueError(f"{csv_path.name}: TIMESTAMP step {step:.5f} s is not 100 Hz; use data_100Hz")
-    mapped = map_stages(frame["Sleep_Stage"].to_numpy(dtype=object))
-    row_view, stage_view, starts, details = replay_epoch_rows(mapped)
-    positions = (starts[:, None] + np.arange(SOURCE_EPOCH_SAMPLES, dtype=np.int64)[None, :]).reshape(-1)[::DOWNSAMPLE]
-    source_rows, replay_stages = row_view[positions], stage_view[positions]
+    raw_stages = frame["Sleep_Stage"].to_numpy(dtype=object)
+    mapped = map_stages(raw_stages)
     with np.load(npz_path, allow_pickle=False) as saved:
         stored_ibi = np.asarray(saved["data"]).reshape(-1)
         npz_samples = int(stored_ibi.size)
-        npz_stages = np.asarray(saved["stages"]).reshape(-1)
+        npz_stages = np.asarray(saved["stages"]).reshape(-1).astype(np.int64)
     if npz_stages.size != npz_samples:
         raise ValueError(f"{npz_path.name}: expected sample-level stages")
-    if len(replay_stages) != npz_samples:
-        raise ValueError(f"{npz_path.name}: replay gives {len(replay_stages)} samples, NPZ has {npz_samples}")
-    mismatch = np.flatnonzero(replay_stages != npz_stages.astype(np.int64))
-    if mismatch.size:
-        raise ValueError(f"{npz_path.name}: replayed stages differ from the NPZ at {mismatch.size} samples "
-                         f"(first {mismatch[:5].tolist()})")
+    attempts, chosen = [], None
+    for p_as_wake in (False, True):
+        candidate = map_stages(raw_stages, p_as_wake=True) if p_as_wake else mapped
+        if p_as_wake and np.array_equal(candidate, mapped):
+            continue  # no "P" rows: identical to the first pass
+        for trim in TRIM_VARIANTS:
+            try:
+                row_view, stage_view, starts, details = replay_epoch_rows(candidate, trim=trim)
+            except ValueError as error:
+                attempts.append(dict(trim=trim, p_as_wake=p_as_wake, error=str(error)))
+                continue
+            positions = (starts[:, None] + np.arange(SOURCE_EPOCH_SAMPLES, dtype=np.int64)[None, :]).reshape(-1)[::DOWNSAMPLE]
+            replay_stages = stage_view[positions]
+            attempt = dict(trim=trim, p_as_wake=p_as_wake, samples=int(len(replay_stages)))
+            if len(replay_stages) == npz_samples:
+                mismatch = np.flatnonzero(replay_stages != npz_stages)
+                attempt["stage_mismatches"] = int(mismatch.size)
+                if not mismatch.size:
+                    chosen = (row_view[positions], replay_stages, dict(details, p_as_wake=p_as_wake),
+                              row_view, starts)
+            attempts.append(attempt)
+            if chosen:
+                break
+        if chosen:
+            break
+    if chosen is None:
+        labels, counts = np.unique(np.asarray([str(value) for value in raw_stages]), return_counts=True)
+        tried = "; ".join(f"trim={a['trim']} P_as_W={a['p_as_wake']}: "
+                          + (a["error"] if "error" in a else f"{a['samples']} samples"
+                             + (f", {a['stage_mismatches']} stage mismatches" if "stage_mismatches" in a else ""))
+                          for a in attempts)
+        raise ValueError(f"{npz_path.name}: no replay reproduces the NPZ ({npz_samples} samples, "
+                         f"{npz_samples // 750} epochs). Tried: {tried}. "
+                         f"CSV rows {len(raw_stages)}, raw stage labels {dict(zip(labels.tolist(), counts.tolist()))}")
+    source_rows, replay_stages, details, chosen_rows, chosen_starts = chosen
     flags_all, raw_values = event_flags(frame)
     flags = flags_all[source_rows]
     any_event = flags.max(axis=1).astype(np.uint8)
@@ -236,7 +285,7 @@ def build_subject_labels(csv_path, npz_path, *, ahi=None, verify_ibi_epochs=0):
     epoch_any = any_event[:epochs * 750].reshape(epochs, 750).max(axis=1) if epochs else np.zeros(0)
     report = dict(
         subject=npz_path.stem, csv=csv_path.name, samples=npz_samples, epochs=epochs,
-        stages_match=True, length_match=True, replay=details,
+        stages_match=True, length_match=True, replay=details, replay_attempts=attempts,
         event_sample_fraction=float(any_event.mean()),
         event_epoch_fraction=float(epoch_any.mean()) if epochs else 0.0,
         event_runs_in_csv=runs_by_type, event_runs_total_in_csv=total_runs,
@@ -248,7 +297,7 @@ def build_subject_labels(csv_path, npz_path, *, ahi=None, verify_ibi_epochs=0):
         raw_event_values=raw_values,
     )
     if verify_ibi_epochs:
-        report["ibi_check"] = check_ibi_epochs(frame["BVP"].to_numpy(), row_view, starts, stored_ibi,
+        report["ibi_check"] = check_ibi_epochs(frame["BVP"].to_numpy(), chosen_rows, chosen_starts, stored_ibi,
                                                verify_ibi_epochs)
     arrays = dict(
         schema=np.array(SCHEMA), event_flags=flags, event_columns=np.array(EVENT_COLUMNS),

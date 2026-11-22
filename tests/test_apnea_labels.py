@@ -55,6 +55,30 @@ class ReplayTests(unittest.TestCase):
             np.testing.assert_array_equal(stages, expected_stages, err_msg=f"trial {trial}")
             self.assertEqual(len(rows), details["kept_epochs"] * epoch_samples // 4)
 
+    def test_every_trim_variant_matches_its_literal_reference(self):
+        rng = np.random.default_rng(11)
+        compared = 0
+        for trial in range(40):
+            labels = random_stage_labels(rng, int(rng.integers(3, 20)), 12)
+            mapped = al.map_stages(np.asarray(labels, dtype=object))
+            for trim in (True, False):
+                try:
+                    expected_rows, expected_stages = al.reference_epoch_selection(
+                        mapped, epoch_samples=12, downsample=4, trim=trim)
+                except ValueError:
+                    continue
+                rows, stages, _ = al.replay_epoch_selection(mapped, epoch_samples=12, downsample=4) if trim else \
+                    (lambda r: (r[0][(r[2][:, None] + np.arange(12)[None, :]).reshape(-1)[::4]],
+                                r[1][(r[2][:, None] + np.arange(12)[None, :]).reshape(-1)[::4]], r[3]))(
+                        al.replay_epoch_rows(mapped, epoch_samples=12, trim="none"))
+                np.testing.assert_array_equal(rows, expected_rows)
+                np.testing.assert_array_equal(stages, expected_stages)
+                compared += 1
+        self.assertGreater(compared, 40)
+        self.assertEqual(al.map_stages(np.array(["P", "W"], dtype=object), p_as_wake=True).tolist(), [0, 0])
+        with self.assertRaises(ValueError):
+            al.replay_epoch_rows(np.array([0, 1, 1]), epoch_samples=1, trim="middle")
+
     def test_no_sleep_raises(self):
         with self.assertRaises(ValueError):
             al.replay_epoch_selection(np.array([0, 0, 0, -1]), epoch_samples=2, downsample=1)
@@ -130,16 +154,28 @@ class BuildTests(unittest.TestCase):
             al.load_sample_labels(self.folder, "S001.npz", npz_sha256=sha, expected_samples=len(rows) + 1,
                                   event_columns=["Hypopnea"])
 
+    def test_untrimmed_npz_is_recognised_and_recorded(self):
+        frame, _, raw_dir, npz_dir = write_subject(self.folder, "S004", self.rng)
+        mapped = al.map_stages(frame["Sleep_Stage"].to_numpy(dtype=object))
+        rows, stages = al.reference_epoch_selection(mapped, epoch_samples=al.SOURCE_EPOCH_SAMPLES,
+                                                    downsample=4, trim=False)
+        np.savez(npz_dir / "S004.npz", data=(rows.astype(np.float32) / 1e6)[:, None], fs=25, stages=stages)
+        arrays, report = al.build_subject_labels(raw_dir / "S004_whole_df.csv", npz_dir / "S004.npz")
+        np.testing.assert_array_equal(arrays["source_row"], rows)
+        self.assertEqual(report["replay"]["trim"], "none")
+        self.assertEqual(report["replay_attempts"][0]["trim"], "both")
+        self.assertEqual(json.loads(str(arrays["replay"]))["trim"], "none")
+
     def test_stage_or_length_disagreement_is_refused(self):
         _, rows, raw_dir, npz_dir = write_subject(self.folder, "S002", self.rng)
         with np.load(npz_dir / "S002.npz") as saved:
             stages, data = saved["stages"].copy(), saved["data"]
         stages[len(stages) // 2] = (stages[len(stages) // 2] + 1) % 5
         np.savez(npz_dir / "S002.npz", data=data, fs=25, stages=stages)
-        with self.assertRaisesRegex(ValueError, "stages differ"):
+        with self.assertRaisesRegex(ValueError, "stage mismatches"):
             al.build_subject_labels(raw_dir / "S002_whole_df.csv", npz_dir / "S002.npz")
         np.savez(npz_dir / "S002.npz", data=data[:-750], fs=25, stages=stages[:-750])
-        with self.assertRaisesRegex(ValueError, "replay gives"):
+        with self.assertRaisesRegex(ValueError, "no replay reproduces the NPZ"):
             al.build_subject_labels(raw_dir / "S002_whole_df.csv", npz_dir / "S002.npz")
 
     def test_script_writes_reports_keeps_existing_and_lists_failures(self):
