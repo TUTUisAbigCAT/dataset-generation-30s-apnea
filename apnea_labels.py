@@ -110,23 +110,31 @@ def replay_epoch_rows(mapped_stages, *, epoch_samples=SOURCE_EPOCH_SAMPLES, trim
     return row_view, stage_view, starts, details
 
 
-def stage_relabeling(replay_stages, npz_stages):
-    """{replay code: NPZ code} if the NPZ only renames codes (for example N2 stored as 1), else None.
+# Code maps a stored NPZ may use: the script's own codes, or N1 and N2 both stored
+# as 1 (light sleep), which is how DREAMT_PIBI_SE stores them.
+NPZ_STAGE_CODE_MAPS = ({0: 0, 1: 1, 2: 2, 3: 3, 4: 4}, {0: 0, 1: 1, 2: 1, 3: 3, 4: 4})
 
-    Every replay code must map to one NPZ code at every sample, so the stage
-    boundaries coincide exactly; at least three distinct NPZ codes are required,
-    which rules out a degenerate match against a constant stage track.
+
+def stage_relabeling(replay_stages, npz_stages):
+    """{replay code: NPZ code} if the NPZ only renames codes by a known map (N2 stored as 1), else None.
+
+    Every replay code must map to one NPZ code at every sample, and that map
+    must be part of one of NPZ_STAGE_CODE_MAPS, so the stage boundaries that
+    survive the renaming (for example every wake/sleep change) coincide
+    exactly. At least two NPZ codes are required, which rules out a match
+    against a constant stage track.
     """
     replay_stages = np.asarray(replay_stages, dtype=np.int64)
     npz_stages = np.asarray(npz_stages, dtype=np.int64)
     if replay_stages.shape != npz_stages.shape or not replay_stages.size:
         return None
     pairs = np.unique(np.stack([replay_stages, npz_stages], axis=1), axis=0)
-    if len(np.unique(pairs[:, 0])) != len(pairs):
+    if len(np.unique(pairs[:, 0])) != len(pairs) or len(np.unique(npz_stages)) < 2:
         return None
-    if len(np.unique(npz_stages)) < min(3, len(np.unique(replay_stages))):
+    relabel = {int(a): int(b) for a, b in pairs}
+    if not any(all(code_map.get(a) == b for a, b in relabel.items()) for code_map in NPZ_STAGE_CODE_MAPS):
         return None
-    return {int(a): int(b) for a, b in pairs}
+    return relabel
 
 
 def replay_epoch_selection(mapped_stages, *, epoch_samples=SOURCE_EPOCH_SAMPLES, downsample=DOWNSAMPLE):

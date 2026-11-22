@@ -177,13 +177,30 @@ class BuildTests(unittest.TestCase):
         np.testing.assert_array_equal(arrays["stages"], renamed)
         self.assertEqual(report["replay"]["npz_stage_codes"].get(2), 1)
         self.assertEqual(report["replay"]["trim"], "both")
+        # A night without N3 or REM: only W and light sleep remain after the renaming.
+        frame_light = frame.copy()
+        frame_light["Sleep_Stage"] = frame_light["Sleep_Stage"].replace({"N3": "N2", "R": "N2"})
+        frame_light.to_csv(raw_dir / "S005_whole_df.csv", index=False)
+        light_rows, light_stages = al.reference_epoch_selection(
+            al.map_stages(frame_light["Sleep_Stage"].to_numpy(dtype=object)),
+            epoch_samples=al.SOURCE_EPOCH_SAMPLES, downsample=4)
+        np.savez(npz_dir / "S005.npz", data=(light_rows.astype(np.float32) / 1e6)[:, None], fs=25,
+                 stages=np.where(light_stages == 2, 1, light_stages))
+        arrays, report = al.build_subject_labels(raw_dir / "S005_whole_df.csv", npz_dir / "S005.npz")
+        self.assertEqual(report["replay"]["npz_stage_codes"], {0: 0, 1: 1, 2: 1})
+        np.testing.assert_array_equal(arrays["source_row"], light_rows)
+        frame.to_csv(raw_dir / "S005_whole_df.csv", index=False)
         np.savez(npz_dir / "S005.npz", data=data, fs=25, stages=np.zeros_like(stages))   # constant track
         with self.assertRaisesRegex(ValueError, "no replay reproduces"):
             al.build_subject_labels(raw_dir / "S005_whole_df.csv", npz_dir / "S005.npz")
 
     def test_stage_relabeling_rules(self):
         self.assertEqual(al.stage_relabeling([0, 1, 2, 2, 4], [0, 1, 1, 1, 4]), {0: 0, 1: 1, 2: 1, 4: 4})
+        # A night without N3 or REM (S029, S055, S058, S072, S082) leaves only W and light sleep.
+        self.assertEqual(al.stage_relabeling([0, 1, 2, 2, 0], [0, 1, 1, 1, 0]), {0: 0, 1: 1, 2: 1})
         self.assertIsNone(al.stage_relabeling([0, 1, 2, 2, 4], [0, 1, 1, 2, 4]))   # boundary moved
+        self.assertIsNone(al.stage_relabeling([0, 1, 2, 4], [1, 0, 0, 4]))         # unknown code map
+        self.assertIsNone(al.stage_relabeling([0, 1, 2, 4], [0, 0, 0, 0]))         # constant track
         self.assertIsNone(al.stage_relabeling([0, 1, 2], [0, 1]))
 
     def test_stage_or_length_disagreement_is_refused(self):
