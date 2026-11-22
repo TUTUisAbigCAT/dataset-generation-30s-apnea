@@ -8,7 +8,7 @@
 # Step 1. Respiratory-event sidecars for every DREAMT_PIBI_SE NPZ (no model, no GPU work;
 # the GPU allocation is only the usual way to get CPUs on this login node).
 # Run from /project/def-plago/yxtao/dataset-generation-30s-apnea:
-#   sbatch submit_apnea_labels.sh
+#   sbatch submit_apnea_labels.sh [RAW_DIR]
 # The NPZ folder is only read. Resubmitting keeps finished sidecars.
 # Check afterwards: OUT/report.csv (status, event fractions, events per sleep hour vs AHI).
 
@@ -22,7 +22,14 @@ source ./.venv/bin/activate
 export XDG_CACHE_HOME="${SLURM_TMPDIR:-/tmp}/cache" MPLCONFIGDIR="${SLURM_TMPDIR:-/tmp}/matplotlib"
 mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR"
 
-RAW_DIR="${RAW_DIR:-/home/yxtao/scratch/confirmed_datasets/physionet.org/files/dreamt/2.1.0/data_100Hz}"
+# The raw folder can be given as the first argument (works whatever sbatch does with
+# the environment):  sbatch submit_apnea_labels.sh /path/to/dreamt/2.1.0/data_100Hz
+RAW_DIR="${1:-${RAW_DIR:-/home/yxtao/scratch/confirmed_datasets/physionet.org/files/dreamt/2.1.0/data_100Hz}}"
+if [ ! -d "$RAW_DIR" ]; then
+  echo "Raw DREAMT folder not found: $RAW_DIR" >&2
+  echo "Find it with: find /scratch/\$USER /project/def-plago -maxdepth 7 -name 'S002_*.csv' 2>/dev/null" >&2
+  exit 1
+fi
 NPZ_DIR="${NPZ_DIR:-/home/yxtao/links/scratch/WatchSleepProcessedDataset/DREAMT_PIBI_SE}"
 OUT="${OUT:-/home/yxtao/links/scratch/WatchSleepProcessedDataset/DREAMT_PIBI_SE_APNEA}"
 VERIFY_IBI_EPOCHS="${VERIFY_IBI_EPOCHS:-0}"   # e.g. 3 recomputes 3 epochs of IBI per subject with neurokit2

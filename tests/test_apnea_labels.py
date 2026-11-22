@@ -174,6 +174,30 @@ class BuildTests(unittest.TestCase):
                                             "--output-dir", str(self.folder / "npz")]))
 
 
+class RawFolderTests(unittest.TestCase):
+    def test_missing_or_csv_free_raw_folder_fails_before_any_subject(self):
+        with tempfile.TemporaryDirectory() as name:
+            folder = Path(name)
+            with self.assertRaisesRegex(FileNotFoundError, "does not exist"):
+                builder.csv_index(folder / "absent")
+            (folder / "data_64Hz").mkdir()
+            (folder / "notes.txt").write_text("x")
+            with self.assertRaisesRegex(FileNotFoundError, "No CSV files directly inside"):
+                builder.csv_index(folder)
+            (folder / "S002_whole_df.csv.gz").write_bytes(b"")
+            (folder / "S003_PSG_df.csv").write_text("")
+            self.assertEqual(sorted(builder.csv_index(folder)), ["S002", "S003"])
+
+    def test_64_hz_csv_is_refused(self):
+        with tempfile.TemporaryDirectory() as name:
+            folder = Path(name)
+            frame, _, raw_dir, npz_dir = write_subject(folder, "S001", np.random.default_rng(5), epochs=6)
+            frame["TIMESTAMP"] = np.arange(len(frame)) / 64.0
+            frame.to_csv(raw_dir / "S001_whole_df.csv", index=False)
+            with self.assertRaisesRegex(ValueError, "not 100 Hz"):
+                al.build_subject_labels(raw_dir / "S001_whole_df.csv", npz_dir / "S001.npz")
+
+
 class OptionTests(unittest.TestCase):
     def test_condition_options(self):
         self.assertIsNone(al.condition_options({}))

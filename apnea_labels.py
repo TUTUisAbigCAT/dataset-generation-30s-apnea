@@ -199,10 +199,15 @@ def build_subject_labels(csv_path, npz_path, *, ahi=None, verify_ibi_epochs=0):
     import pandas as pd
 
     csv_path, npz_path = Path(csv_path), Path(npz_path)
-    wanted = ("Sleep_Stage",) + EVENT_COLUMNS + (("BVP",) if verify_ibi_epochs else ())
+    wanted = ("TIMESTAMP", "Sleep_Stage") + EVENT_COLUMNS + (("BVP",) if verify_ibi_epochs else ())
     frame = pd.read_csv(csv_path, usecols=lambda name: name in wanted, low_memory=False)
     if "Sleep_Stage" not in frame.columns:
         raise ValueError(f"{csv_path.name} has no Sleep_Stage column")
+    if "TIMESTAMP" in frame.columns and len(frame) > 1:
+        # The replay assumes 100 Hz rows (3000 per epoch); the 64 Hz folder would not match.
+        step = float(np.median(np.diff(frame["TIMESTAMP"].to_numpy(dtype=np.float64)[:10001])))
+        if not abs(step - 1.0 / SOURCE_FS) < 0.05 / SOURCE_FS:
+            raise ValueError(f"{csv_path.name}: TIMESTAMP step {step:.5f} s is not 100 Hz; use data_100Hz")
     mapped = map_stages(frame["Sleep_Stage"].to_numpy(dtype=object))
     row_view, stage_view, starts, details = replay_epoch_rows(mapped)
     positions = (starts[:, None] + np.arange(SOURCE_EPOCH_SAMPLES, dtype=np.int64)[None, :]).reshape(-1)[::DOWNSAMPLE]

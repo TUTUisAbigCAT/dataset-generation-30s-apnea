@@ -27,6 +27,8 @@ mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}" MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export PYTHONFAULTHANDLER=1
 
+RUN="${1:-${RUN:-}}"        # or: sbatch submit_generate_nights.sh RUN_FOLDER LABEL
+LABEL="${2:-${LABEL:-}}"
 : "${RUN:?set RUN to a training run folder}"
 : "${LABEL:?set LABEL, for example 2min or 30s_apnea}"
 CHECKPOINT="${CHECKPOINT:-$RUN/training/best_kl_model.pth}"

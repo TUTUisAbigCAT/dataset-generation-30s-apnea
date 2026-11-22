@@ -75,9 +75,20 @@ def process_subject(task):
 
 
 def csv_index(raw_dir):
+    """{subject: CSV} for the raw folder; fails loudly when the folder holds no CSV at all."""
+    raw_dir = Path(raw_dir)
+    if not raw_dir.is_dir():
+        raise FileNotFoundError(f"--raw-dir does not exist: {raw_dir} "
+                                "(point it at DREAMT's data_100Hz folder that holds S002_*.csv ...)")
+    paths = sorted(list(raw_dir.glob("*.csv")) + list(raw_dir.glob("*.csv.gz")))
+    if not paths:
+        entries = sorted(entry.name + ("/" if entry.is_dir() else "") for entry in raw_dir.iterdir())
+        raise FileNotFoundError(f"No CSV files directly inside --raw-dir {raw_dir}; it contains "
+                                f"{len(entries)} entries, first {entries[:10]}. "
+                                "Point --raw-dir at DREAMT's data_100Hz folder.")
     index = {}
-    for path in sorted(Path(raw_dir).glob("*.csv")):
-        sid = path.stem.split("_")[0]
+    for path in paths:
+        sid = path.name.split("_")[0].split(".")[0]
         if sid in index:
             raise ValueError(f"Two raw CSVs for {sid}: {index[sid].name}, {path.name}")
         index[sid] = path
