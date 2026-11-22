@@ -6,6 +6,32 @@
 
 网络结构、优化器、epsilon MSE 损失和训练更新公式沿用固定上游版本；本地 S4 慢速 Cauchy 回退计算补齐遗漏的共轭项。新训练通过独立的 `diffusion_schedule.py` 将200步日程的终点累计 alpha 调整到约 `1e-8`，使训练末态更接近采样使用的标准高斯起点；训练与推理使用同一记录日程。采样运行时另修正一处后验噪声系数：使用后验方差的平方根作为标准差；固定上游源码及 `training_utils.py` 不改写。在 `de30ac2` 的数据与 CUDA 设备适配基础上，增加每轮生成验证、loss 数值平均及早停；本地改动纳入源码检查器的逐项白名单。上游来源和许可证说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
+## 30 秒窗口 + 呼吸事件条件（dataset-generation-30s-apnea）
+
+本仓库从 dataset-generation-v2（`3aaea1b`）分出，只做三件事，**原始数据和已有 NPZ 不改**，归一化与缺失值策略沿用推荐配置（`preserve`，0–2 s 线性映射到 [−1, 1]）：
+
+1. **呼吸事件标签**（`apnea_labels.py`、`scripts/build_apnea_labels.py`）：DREAMT_PIBI_SE 的 NPZ 里没有呼吸事件。脚本在原始 100 Hz CSV 上重放 WatchSleepNet 生成 NPZ 时的步骤（去掉 Missing/P、按原脚本的下标裁剪、逐个 30 秒 epoch 找阶段一致的片段、每 4 点取 1 点），得到每个 25 Hz 样本对应的 CSV 行，再读出 Obstructive_Apnea、Central_Apnea、Hypopnea、Multiple_Events 四列。**只有当重放出的睡眠阶段序列和长度与 NPZ 完全一致时才写出**，结果放在单独的文件夹（每人一个 sidecar NPZ，记录所对应 NPZ 的 SHA-256；NPZ 一旦变化，训练会直接报错）。
+2. **第 11 个条件通道** `apnea_event`：配置里的 `apnea_condition` 打开后，每个样本 0/1（四种事件任一发生 = 1，可用 `event_columns` 只选其中几种），和睡眠阶段 one-hot 一样不做缩放；放在最后一个通道，原来 10 个通道的位置不变。不写 `apnea_condition` 时仍是原来的 10 通道，所以旧的 2 分钟 checkpoint 也能用本仓库生成。
+3. **30 秒窗口**（`window_epochs: 1`）、**全部 88 人整晚生成**（`scripts/generate_all_nights.py`）和 **与 2 分钟模型的对比**（`scripts/compare_night_generations.py`）。整晚生成时每个窗口独立生成后拼接，每个 epoch 只生成一次；2 分钟模型末尾不足 4 个 epoch 的部分用对齐到末尾的窗口补齐。
+
+配置：`configs/dreamt_30s_apnea.json`（主实验）、`configs/dreamt_30s.json`（30 秒、不加事件，用来单独看呼吸事件条件的作用）。除窗口长度和事件通道外与 `configs/dreamt_recommended.json` 相同（训练 batch 8、50 轮、S092 上按 KL 选 best；验证 batch 改为 32，每次调用的样本数与 2 分钟 × 8 相同）。
+
+在 Trillium 上的运行顺序（仓库放在 `/project/def-plago/yxtao/dataset-generation-30s-apnea`，可直接复用 v2 的环境：`ln -s ../dataset-generation-v2/.venv .venv`）：
+
+```bash
+sbatch submit_apnea_labels.sh            # 1. 生成呼吸事件 sidecar，先看 report.csv（全部 status=written、事件数/睡眠小时 与 AHI 的相关）
+sbatch submit_30s_apnea.sh               # 2. 训练 30 秒 + 呼吸事件模型（可加 --dependency=afterok:<上一步的 job id>）
+sbatch --export=ALL,CONFIG=configs/dreamt_30s.json submit_30s_apnea.sh   # 可选：不加事件的 30 秒对照
+# 3. 两个模型各自生成全部 88 人整晚（任务超时可原样重交，已完成的人会跳过）
+sbatch --export=ALL,RUN=/home/yxtao/links/scratch/dataset-generation-30s-apnea/runs/dreamt_30s_apnea_<JOB>,LABEL=30s_apnea submit_generate_nights.sh
+sbatch --export=ALL,RUN=/home/yxtao/links/scratch/dataset-generation-v2/runs/dreamt_recommended_1346112,LABEL=2min submit_generate_nights.sh
+sbatch submit_compare_nights.sh          # 4. 对比，结果在 nights/compare_2min_vs_30s_apnea/report.md 和图
+```
+
+对比只在“所有模型都生成了、且真实 IBI 有观测（> 0）”的同一批位置上计算：全体合并 W1/KS、每人 W1（配对 Wilcoxon）、每个 30 秒 epoch 内的 W1、四个睡眠阶段、有/无呼吸事件的 epoch、每人“事件期平均 IBI − 非事件期平均 IBI”的真实值与生成值、整晚 Welch PSD 的 VLF/LF/HF 差（dB）、窗口接缝处的跳变；事件模型另报告同一噪声下把事件通道置 0 前后的差（事件通道本身的作用）。
+
+注意：dreamt_recommended_1346112 训练时 EMA 因冻结配置的 bug 没有生效（已在 v2 `3aaea1b` 修复），而本仓库的 30 秒配置会启用 EMA。如果已有修复后重训的 2 分钟推荐配置，请用它作为对比基线，这样两边只差窗口长度和事件通道。
+
 ## v2 修订（dataset-generation-v2）
 
 本仓库在原仓库 `TUTUisAbigCAT/dataset-generation`（commit `ce31920`）的基础上，按 [代码修改指南](docs/代码修改指南.md) 修改，完整变更见 [CHANGES_v2.md](CHANGES_v2.md)。**所有新功能默认关闭**，`dataset_config.json` 与旧运行逐位一致；新功能集中在 `configs/dreamt_recommended.json`：
